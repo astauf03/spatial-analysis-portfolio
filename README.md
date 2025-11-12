@@ -1,4 +1,4 @@
-# ArcGIS Pro Spatial Analysis Portfolio
+#Alex Stauffer's GIS portfolio 
 
 This portfolio showcases my work using **ArcGIS Pro** for geoprocessing, spatial analysis, and visualization.  
 Each project demonstrates practical applications of Esri tools and spatial reasoning to real-world urban data, including Philadelphia-based datasets.
@@ -42,13 +42,13 @@ Each project demonstrates practical applications of Esri tools and spatial reaso
 ---
 
 ## About
-I’m a spatial data analyst with experience in **urban spatial analysis, GIS workflows, and visualization** using Esri tools.  
+I’m a spatial data analyst with experience in **urban spatial analysis, GIS workflows, and visualization** using Esri tools and data analytical langauges like R and Python.  
 My work focuses on connecting spatial data to insights about neighborhood structure, land use, and community change. I am interested in 
 the nighttime culture and economies, and empowering cities with tools for 24-hour operation. 
 
 - 📍 Based in Philadelphia  
-- 🖥️ Tools: ArcGIS Pro, ArcGIS Online, Python, ModelBuilder, R, SQL  
-- 📫 Contact: [Your Email or LinkedIn]  
+- 🖥️ Tools: ArcGIS Pro, Python, ModelBuilder, R, SQL  
+- 📫 Contact: [astauf03@upenn.edu] 
 
 ---
 
