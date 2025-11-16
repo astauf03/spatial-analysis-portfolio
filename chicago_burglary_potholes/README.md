@@ -19,3 +19,7 @@ This project investigates whether 311 alley pothole complaints are predictive of
 ### Full Report
 ➡️ **[View Full HTML Report](stauffer_alex.html)**
 
+### Source Code
+- [RMarkdown File (stauffer_alex.Rmd)](stauffer_alex.Rmd)
+
+
