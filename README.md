@@ -7,7 +7,7 @@ Each project demonstrates practical applications of Esri tools and spatial reaso
 
 ## Projects
 
-### 1. Predictive Policing – Chicago 2017 - 2018 
+### 1. Public Policy Analytics Assignment 4: Predictive Policing – Chicago 2017 - 2018 
 **Goal:** I analyze the 311 "Alley Pothole Complaints" across the city of Chicago in correlation with forced-entry burglaries and other structural features. 
 **Tools & Methods:**
 - Spatial join and fishnet aggregations  
