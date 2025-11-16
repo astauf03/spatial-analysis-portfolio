@@ -14,7 +14,7 @@ Each project demonstrates practical applications of Esri tools and spatial reaso
 - Local Moran’s I (LISA) for spatial clustering, Poisson and Negative Binomial regressions, Leave-One-Group-Out cross-validation  
 - Symbology and classification for identifying high-high and low-low clusters  
 **Outcome:** Potholes weakly predict burglary risk, but demographics and neighborhood conditions explain most patterns  
-[View Project →](predictive_policing/index.md)
+[View Project →](predictive_policing/)
 
 ---
 
