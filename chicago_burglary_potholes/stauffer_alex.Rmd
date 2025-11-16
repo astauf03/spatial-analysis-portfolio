@@ -1,0 +1,1098 @@
+---
+title: "Predictive Policing"
+subtitle: "MUSA 5080 - Fall 2025"
+author: "Alex Stauffer"
+date: November 17, 2025
+output:
+  html_document:
+    theme: yeti
+    highlight: tango
+    toc: true
+    toc_depth: 3
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    code_folding: hide
+    code_download: true
+    self_contained: true
+    df_print: paged
+---
+
+------------------------------------------------------------------------
+
+# **Introduction**
+
+For this assignment, I chose to analyze the 311 "Alley Pothole Complaints" across the city of Chicago in correlation with forced-entry burglaries. I selected this variable because Pennsylvanians deal with a fair share of potholes, so I am curious about the pothole issues in Chicago and whether failing road infrastructure, designated in the form of 311 complaints,has any relationship to property crime.
+
+I expect potholes to show spatial clustering similar to burglaries, concentrated in areas with lower socioeconomic status. However, the predictive relationship may be modest once we control for demographic and housing characteristics, as both phenomena likely share common underlying causes (poverty, tenure patterns, age structure) rather than having a direct causal link.
+
+```{r setup, include = FALSE, warning = FALSE, comment=''}
+
+# Load required packages
+library(tidyverse)      # Data manipulation
+library(sf)             # Spatial operations
+library(here)           # Relative file paths
+library(viridis)        # Color scales
+library(terra)          # Raster operations (replaces 'raster')
+library(spdep)          # Spatial dependence
+library(FNN)            # Fast nearest neighbors
+library(MASS)           # Negative binomial regression
+library(patchwork)      # Plot composition (replaces grid/gridExtra)
+library(knitr)          # Tables
+library(kableExtra)     # Table formatting
+library(classInt)       # Classification intervals
+library(tidycensus)
+
+# Spatstat split into sub-packages
+library(spatstat.geom)    # Spatial geometries
+library(spatstat.explore) # Spatial exploration/KDE
+
+# Set options
+options(scipen = 999)  # No scientific notation
+set.seed(5080)         # Reproducibility
+
+# Fix namespace conflicts (terra masks dplyr functions)
+select <- dplyr::select
+filter <- dplyr::filter
+mutate <- dplyr::mutate
+rename <- dplyr::rename
+
+# Create consistent theme for visualizations
+theme_crime <- function(base_size = 11) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.title = element_text(face = "bold", size = base_size + 1),
+      plot.subtitle = element_text(color = "gray30", size = base_size - 1),
+      legend.position = "right",
+      panel.grid.minor = element_blank(),
+      axis.text = element_blank(),
+      axis.title = element_blank()
+    )
+}
+
+# Set as default
+theme_set(theme_crime())
+
+cat("✓ All packages loaded successfully!\n")
+cat("✓ Working directory:", getwd(), "\n")
+```
+
+------------------------------------------------------------------------
+
+## **Load and Explore Data**
+
+This chunk loads the spatial boundaries needed for analysis. The police districts will be used for spatial cross-validation (Leave-One-Group-Out), while the beats provide finer administrative units and the Chicago boundary defines our study area.
+
+```{r load-spatial-data, include=FALSE, warning=FALSE, comment = ''}
+
+# Loading police districts
+policeDistricts <- 
+  st_read("https://data.cityofchicago.org/api/geospatial/24zt-jpfn?method=export&format=GeoJSON") %>%
+  st_transform('ESRI:102271') %>%
+  dplyr::select(District = dist_num)
+
+# Loading police beats 
+policeBeats <- 
+  st_read("https://data.cityofchicago.org/api/geospatial/n9it-hstw?method=export&format=GeoJSON") %>%
+  st_transform('ESRI:102271') %>%
+  dplyr::select(Beat = beat_num)
+
+# Loading Chicago Boundary
+chicagoBound <- 
+  st_read("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/Chapter5/chicagoBoundary.geojson")%>%
+  st_transform('ESRI:102271') 
+
+cat("Loaded spatial boundaries \n")
+cat(" - Police districts:", nrow(policeDistricts), "\n")
+cat(" - Police beats:", nrow(policeBeats), "\n")
+```
+
+Then I load the 311 pothole data, ensuring the same ESPG as the Chicago Boundary, a local coordnate reference system of Chicago, Illinois.
+
+```{r burglaries, message=FALSE, echo = FALSE, warning=FALSE, include = FALSE}
+burglaries <- st_read(here("labs/lab4/data/burglaries.shp")) %>% 
+  st_transform('ESRI:102271')
+
+## I queried on the website then downloaded the queried csv. 
+holes311 <- read.csv(here("labs/lab4/data/311_Service_Requests_20251111.csv")) %>%
+  filter(!is.na(LATITUDE), !is.na(LONGITUDE)) %>%
+  st_as_sf(coords = c("LONGITUDE", "LATITUDE"), crs = 4326) %>%
+  st_transform('ESRI:102271')
+
+districtSum <- holes311 %>%
+  st_drop_geometry() %>%
+  count(POLICE_DISTRICT, sort = TRUE)
+
+#using cat to check data
+cat("\n Loaded burglary data \n")
+cat("  - Number of burglaries:", nrow(burglaries), "\n")
+cat("  - CRS:", st_crs(burglaries)$input, "\n")
+cat("  - Date range:", min(burglaries$date, na.rm = TRUE), "to", 
+    max(burglaries$date, na.rm = TRUE), "\n")
+
+cat("\n Loaded 311 data \n")
+cat("  - Number of observations:", nrow(holes311), "\n")
+cat("  - CRS:", st_crs(holes311)$input, "\n")
+cat("  - District", districtSum$POLICE_DISTRICT[1], "has the most pothole 311 calls at\n", districtSum$n[1])
+
+```
+
+## Exploratory Spatial Analysis
+
+The following visualizations explore the spatial distribution of pothole complaints across Chicago. The point map shows the raw locations of all 311 calls, while the kernel density estimation reveals underlying intensity patterns by smoothing point locations into a continuous surface.
+
+
+```{r visualize-points, fig.width=10, fig.height=5, echo = FALSE,  message=FALSE, warning=FALSE, include = TRUE}
+
+#point map of potholes 
+p1 <- ggplot() + 
+  geom_sf(data = chicagoBound, fill = "grey75", color = "grey4") +
+  geom_sf(data = holes311, color = "#25F2F5",size = 0.1, alpha = 0.4) + 
+  labs(title = "Pothole Locations",
+       subtitle = paste0("Chicago 2017, n = ", nrow(holes311)))
+
+#kernel density map of potholes 
+p2 <- ggplot() + 
+  geom_sf(data = chicagoBound, fill = "grey75", color = "grey4") +
+  geom_density_2d_filled(
+    data = data.frame(st_coordinates(holes311)),
+    aes(X, Y),
+    alpha = 0.7,
+    bins = 8
+  ) +
+  scale_fill_viridis_d(
+    option = "plasma",
+    direction = -1,
+    guide = "none"  
+  ) +
+  labs(
+    title = "Density Surface",
+    subtitle = "Kernel density estimation"
+  )
+
+# combine plots 
+p1 + p2 +
+  plot_annotation(
+    title = "Spatial Distribution of 311 Pothole Complaints in Chiago 2017",
+    tag_levels = '1'
+  )
+
+```
+
+Map 1 (left) reveals the 70,046 pothole complaints are clustered rather than evenly distributed across Chicago. Map 2 (right) affirms this pattern: the highest intensity appears in the north/northwestern area and extends southwest along major corridors.
+
+This distribution may reflect several factors: (1) differing road quality across neighborhoods, (2) varying neighborhoods clusters of people willing to complain, or (3) actual differences in infrastructure maintenance priorities. 
+
+------------------------------------------------------------------------
+
+## Fishnet Grid
+
+For evenly dispersed analysis, creating a fishnet grid assigns a square area of a certain height and length within a boundary and each square area is of equal proportion. This acts as a container for summarizing and analyzing data within each cell, comparing spatial data uniformly. Our fishnet will be 500m x 500m.
+
+---
+
+### Create Fishnet
+
+```{r create-fishnet, warning=FALSE}
+# Create a 500m x 500m grid over Chicago
+fishnet <- st_make_grid(
+  chicagoBound,
+  cellsize = 500,
+  square = TRUE
+) %>%
+  st_sf() %>%
+  mutate(uniqueID = row_number())
+
+# Properly clip to Chicago boundary using intersection
+fishnet <- st_intersection(fishnet, chicagoBound) %>%
+  mutate(uniqueID = row_number())  # Re-number after clipping
+
+cat("✓ Created fishnet grid\n")
+cat("  - Number of cells:", nrow(fishnet), "\n")
+```
+
+By using spatial intersection to clip the grid to Chicago's boundary, I exclude cells that fall outside the city limits. This ensures that our analysis only includes areas where both 311 calls and burglaries can legitimately occur, avoiding edge effects from partial cells.
+
+------------------------------------------------------------------------
+
+### Aggregate Burglaries and Potholes to Grid
+
+This chunk performs a spatial join of point-level burglary incidents to the 500m x 500m fishnet.
+
+```{r aggregate-burglaries, fig.width=8, fig.height=6, comment=''}
+burglaries_fish <- st_join(burglaries, fishnet, join = st_within)%>%
+  st_drop_geometry() %>%
+  group_by(uniqueID) %>%
+  summarize(countBurglaries = n())
+
+fishnet <- fishnet %>%
+  left_join(burglaries_fish, by = "uniqueID") %>%
+  mutate(countBurglaries = replace_na(countBurglaries,0))
+
+# aggregate stats
+cat("\nBurglary count distribution:\n")
+summary(fishnet$countBurglaries)
+cat("\nCells with zero burglaries:", 
+    sum(fishnet$countBurglaries == 0), 
+    "/", nrow(fishnet),
+    "(", round(100 * sum(fishnet$countBurglaries == 0) / nrow(fishnet), 1), "%)\n")
+
+```
+
+About `r round(100 * sum(fishnet$countBurglaries == 0) / nrow(fishnet), 1)`% of cells have zero burglaries. This zero-inflation is typical of crime data and motivates our use of count regression models (Poisson or Negative Binomial) rather than ordinary least squares. The maximum count is `r max(fishnet$countBurglaries)` burglaries in a single cell, indicating spatial heterogeneity in crime risk.
+
+---
+
+Now I aggregate pothole 311 calls to the same grid:
+
+```{r, agg-pot}
+# Aggregate potholes to fishnet
+potholes_fish <- st_join(holes311, fishnet, join = st_within) %>%
+  st_drop_geometry() %>%
+  group_by(uniqueID) %>%
+  summarize(countPotholes = n())
+
+# Join back to fishnet
+fishnet <- fishnet %>%
+  left_join(potholes_fish, by = "uniqueID") %>%
+  mutate(countPotholes = replace_na(countPotholes, 0))
+
+cat("\nPothole count distribution:\n")
+summary(fishnet$countPotholes)
+cat("\nCells with zero potholes:", 
+    sum(fishnet$countPotholes == 0), 
+    "/", nrow(fishnet),
+    "(", round(100 * sum(fishnet$countPotholes == 0) / nrow(fishnet), 1), "%)\n")
+```
+---
+
+### Visual Grid-Level Counts
+
+```{r vis-fish, fig.width=8, fig.height=6}
+# Map burglary counts
+p1 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = countBurglaries), color = NA) +
+  scale_fill_viridis_c(
+    name = "Count",
+    option = "plasma",
+    trans = "sqrt",
+    breaks = c(0, 1, 5, 10, 20)
+  ) +
+  labs(title = "Burglary Counts per Cell") +
+  theme_crime()
+
+# Map pothole counts  
+p2 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = countPotholes), color = NA) +
+  scale_fill_viridis_c(
+    name = "Count",
+    option = "plasma",
+    trans = "sqrt",
+    breaks = c(0, 20, 50, 100, 200)
+  ) +
+  labs(title = "Pothole Complaint Counts per Cell") +
+  theme_crime()
+
+p1 + p2 +
+  plot_annotation(
+    title = "Spatial Distribution of Burglaries and Potholes at 500m Grid"
+  )
+```
+
+Both burglaries and potholes show spatial clustering, but with  different patterns. Burglaries concentrate on the South and West sides and pothole reports cluster more heavily in the north and central corridors, similar to the KDE map from earlier.This suggests that burglaries and 311 pothole complaints are not directly correlated. 
+
+
+------------------------------------------------------------------------
+
+## Spatial Features Engineering
+
+To understand proximity effects and spatial structure, I will engineer three types of features: nearest-neighbor distances, hot-spot identification via Local Moran's I, and distance to identified hot spots.
+
+------------------------------------------------------------------------
+
+### Calculate K-Nearest Neighbor Features
+
+```{r knn-feature, warning=FALSE}
+
+# Getting Coordinates
+fishnet_coords <- st_coordinates(st_centroid(fishnet))
+pothole_coords <- st_coordinates(holes311)
+
+# Calculate k nearest neighbors (k=3 for average distance to 3 nearest potholes)
+nn_result <- get.knnx(pothole_coords, fishnet_coords, k = 3)
+
+# Add mean distance to fishnet
+fishnet <- fishnet %>%
+  mutate(holes311.nn = rowMeans(nn_result$nn.dist))
+
+cat("✓ Calculated nearest neighbor distances\n")
+cat("  Summary of mean distance to 3 nearest potholes (feet):\n")
+summary(fishnet$holes311.nn)
+```
+
+Using the average distance to the three nearest potholes (rather than just the single nearest) provides a more robust measure of local pothole intensity while reducing sensitivity to isolated outliers.
+
+---
+
+### Calculate Kernel Density Estimation
+
+Now I compute a kernel density surface for burglaries to use as a baseline comparison model:
+
+```{r calculate-kde, message=FALSE, warning=FALSE}
+# Convert burglaries to point pattern object
+burglaries_ppp <- as.ppp(
+  st_coordinates(burglaries),
+  W = as.owin(st_bbox(chicagoBound))
+)
+
+# Calculate KDE with 1km bandwidth
+kde_burglaries <- density.ppp(
+  burglaries_ppp,
+  sigma = 1000,  # 1km = ~3280 feet
+  edge = TRUE    # Edge correction
+)
+
+# Convert to terra raster
+kde_raster <- rast(kde_burglaries)
+
+# Extract KDE values to fishnet cells
+fishnet <- fishnet %>%
+  mutate(
+    kde_value = terra::extract(
+      kde_raster,
+      vect(fishnet),
+      fun = mean,
+      na.rm = TRUE
+    )[, 2]
+  )
+
+cat("✓ Calculated KDE values\n")
+```
+
+---
+
+### Perform Local Moran's I Analysis
+
+Local Moran's I identifies statistically significant clusters and outliers in the pothole distribution. High-High clusters (hot spots) indicate areas where both the focal cell and its neighbors have high pothole counts.
+
+```{r morans-potholes, warning=FALSE}
+
+# Function to calculate Local Moran's I
+calculate_local_morans <- function(data, variable, k = 5) {
+  
+  # Create spatial weights
+  coords <- st_coordinates(st_centroid(data))
+  neighbors <- knn2nb(knearneigh(coords, k = k))
+  weights <- nb2listw(neighbors, style = "W", zero.policy = TRUE)
+  
+  # Calculate Local Moran's I
+  local_moran <- localmoran(data[[variable]], weights)
+  
+  # Classify clusters
+  mean_val <- mean(data[[variable]], na.rm = TRUE)
+  
+  data %>%
+    mutate(
+      local_i = local_moran[, 1],
+      p_value = local_moran[, 5],
+      is_significant = p_value < 0.05,
+      
+      moran_class = case_when(
+        !is_significant ~ "Not Significant",
+        local_i > 0 & .data[[variable]] > mean_val ~ "High-High",
+        local_i > 0 & .data[[variable]] <= mean_val ~ "Low-Low",
+        local_i < 0 & .data[[variable]] > mean_val ~ "High-Low",
+        local_i < 0 & .data[[variable]] <= mean_val ~ "Low-High",
+        TRUE ~ "Not Significant"
+      )
+    )
+}
+
+# Apply to potholes
+fishnet <- calculate_local_morans(fishnet, "countPotholes", k = 5)
+
+cat("✓ Calculated Local Moran's I\n")
+cat("  Hot spots (High-High):", sum(fishnet$moran_class == "High-High"), "\n")
+cat("  Cold spots (Low-Low):", sum(fishnet$moran_class == "Low-Low"), "\n")
+    
+```
+
+---
+
+### Visualize Hotpots
+
+Will create a choropleth map highlights HOTHTO LOW LOW
+
+```{r vis-morans, fig.width=8, fig.height=6}
+
+# Visualize hot spots
+ggplot() +
+  geom_sf(
+    data = fishnet,
+    aes(fill = moran_class),
+    color = NA
+  ) +
+  scale_fill_manual(
+    values = c(
+      "High-High" = "#d7191c",
+      "High-Low" = "#fdae61",
+      "Low-High" = "#abd9e9",
+      "Low-Low" = "#2c7bb6",
+      "Not Significant" = "gray90"
+    ),
+    name = "Cluster Type"
+  ) +
+  labs(
+    title = "Local Moran's I: Pothole Hot Spots",
+    subtitle = "High-High clusters represent statistically significant hot spots of infrastructure complaints"
+  ) +
+  theme_crime()
+```
+
+The LISA map reveals distinct pothole hot spots in the northern area and parts of the northwest. These High-High clusters indicate areas where both the cell and its neighbors have elevated pothole counts, representing persistent infrastructure maintenance challenges. The South Side show as Low-Low or Not Significant for potholes.
+
+---
+
+### Calculate the Distance to the Hotspots
+
+```{r hotspots-dist, warning=FALSE,  comment=''}
+# Get centroids of "High-High" cells (hot spots)
+hotspots <- fishnet %>%
+  filter(moran_class == "High-High") %>%
+  st_centroid()
+
+# Calculate distance from each cell to nearest hot spot
+if (nrow(hotspots) > 0) {
+  fishnet <- fishnet %>%
+    mutate(
+      dist_to_hotspot = as.numeric(
+        st_distance(st_centroid(fishnet), hotspots %>% st_union())
+      )
+    )
+  cat("✓ Calculated distance to abandoned car hot spots\n")
+  cat("  - Number of hot spot cells:", nrow(hotspots), "\n")
+} else {
+  fishnet <- fishnet %>%
+    mutate(dist_to_hotspot = 0)
+  cat("⚠ No significant hot spots found\n")
+}
+```
+
+------------------------------------------------------------------------
+
+### Join Additional Information for Cross-Validation
+
+To avoid omitted variable bias, I incorporate American Community Survey (ACS) demographic and socioeconomic controls, and join police district identifiers for spatial cross-validation.
+
+```{r join-acs-data, message=FALSE, results='hide', warning=FALSE}
+# Join district information for spatial cross-validation
+fishnet <- st_join(
+  fishnet,
+  policeDistricts,
+  join = st_within,
+  left = TRUE
+)
+
+# Handle district column name
+if ("dist_num" %in% names(fishnet)) {
+  fishnet <- fishnet %>% dplyr::rename(District = dist_num)
+}
+
+fishnet <- fishnet %>% dplyr::filter(!is.na(District))
+
+cat("✓ Joined police districts\n")
+cat("  - Districts:", length(unique(fishnet$District)), "\n")
+cat("  - Cells:", nrow(fishnet), "\n")
+
+# Define ACS variables
+acs_vars <- c(
+  tot_pop = "B03002_001", #total population
+  med_inc = "B19013_001",
+  white = "B03002_003",
+  black = "B03002_004",
+  hisp = "B03002_012",
+  pov_tot = "B17001_001",
+  pov_num = "B17001_002",
+  occ_tot = "B25003_001",
+  owner = "B25003_002",
+  med_age = "B25035_001"
+)
+
+# Pull 2017 ACS data for Cook County
+tracts <- get_acs(
+  geography = "tract",
+  state = "IL",
+  county = "Cook",
+  year = 2017,
+  variables = acs_vars,
+  survey = "acs5",
+  output = "wide",
+  geometry = TRUE
+)
+
+# Process and join to fishnet
+tracts_chi <- tracts %>%
+  st_transform(st_crs(chicagoBound)) %>%
+  st_filter(chicagoBound, .predicate = st_intersects) %>%
+  dplyr::mutate(
+    pct_black = 100 * blackE / pmax(tot_popE, 1),
+    pct_hisp = 100 * hispE / pmax(tot_popE, 1),
+    pct_poverty = 100 * pov_numE / pmax(pov_totE, 1),
+    pct_owner = 100 * ownerE / pmax(occ_totE, 1),
+    med_income = med_incE,
+    med_house_age = med_ageE
+  ) %>%
+  dplyr::select(GEOID, pct_black, pct_hisp, pct_poverty, pct_owner, 
+                med_income, med_house_age)
+
+# Spatial join to fishnet
+fishnet <- fishnet %>%
+  st_join(tracts_chi, join = st_intersects, left = TRUE)
+
+cat("✓ Joined ACS census data\n")
+cat("  Controls: poverty, race/ethnicity, tenure, income, housing age\n")
+```
+---
+
+## Count Regression Models
+
+With our spatial features and controls in place, I now fit count regression models to predict burglary risk from pothole patterns and neighborhood characteristics
+
+---
+
+### Prepare Modeling Frame
+
+```{r prepare-model, message=FALSE, results='hide'}
+# Create clean modeling dataset
+
+# Handle duplicate columns from joins (rename .y versions to clean names)
+# Only rename if .y columns exist
+if ("pct_black.y" %in% names(fishnet)) {
+  fishnet <- fishnet %>%
+    rename(
+      pct_black = pct_black.y,
+      pct_hisp = pct_hisp.y,
+      pct_poverty = pct_poverty.y,
+      pct_owner = pct_owner.y,
+      med_income = med_income.y,
+      med_house_age = med_house_age.y
+    ) %>%
+    # Remove .x versions if they exist
+    select(-any_of(c("pct_black.x", "pct_hisp.x", "pct_poverty.x", 
+                     "pct_owner.x", "med_income.x", "med_house_age.x")))
+}
+
+# Create modeling frame
+fishnet_model <- fishnet %>%
+  st_drop_geometry() %>%
+  select(
+    uniqueID, District,
+    countBurglaries,
+    countPotholes, holes311.nn, dist_to_hotspot,
+    pct_black, pct_hisp, pct_poverty, pct_owner,
+    med_income, med_house_age
+  ) %>%
+  mutate(
+    # Scale percentages to proportions (0-1 scale)
+    across(c(pct_black, pct_hisp, pct_poverty, pct_owner), ~ .x / 100),
+    # Log-transform income to reduce skew
+    log_income = log(pmax(med_income, 1))
+  ) %>%
+  drop_na()
+
+cat("✓ Prepared modeling dataset\n")
+cat("  Observations:", nrow(fishnet_model), "\n")
+cat("  Variables:", ncol(fishnet_model), "\n")
+```
+---
+
+### Fit Poisson Regression
+
+```{r fit-poisson}
+model_poisson <- glm(
+  countBurglaries ~ countPotholes + holes311.nn + dist_to_hotspot +
+    pct_poverty + pct_owner + log_income + med_house_age +
+    pct_black + pct_hisp,
+  data = fishnet_model,
+  family = poisson(link = "log")
+)
+
+
+summary(model_poisson)
+```
+---
+
+### Check for Overdispersion
+
+Poisson regression assumes mean = variance. Real count data often violates this (overdispersion).
+
+```{r check-overdispersion}
+# Calculate dispersion parameter
+dispersion <- sum(residuals(model_poisson, type = "pearson")^2) / 
+  model_poisson$df.residual
+
+cat("Dispersion test:\n")
+cat("  Dispersion parameter:", round(dispersion, 2), "\n")
+cat("  Rule of thumb: >1.5 suggests overdispersion\n")
+
+if (dispersion > 1.5) {
+  cat("  ⚠ Overdispersion detected! Negative Binomial model recommended.\n")
+} else {
+  cat("  ✓ Dispersion acceptable for Poisson model.\n")
+}
+
+```
+
+The dispersion parameter is `r round(dispersion, 2)`, well above the 1.5 threshold. This indicates substantial overdispersion—the variance in burglary counts is much larger than the mean would suggest under Poisson assumptions. This overdispersion can arise from unobserved heterogeneity, spatial clustering, or other sources of extra-Poisson variation. The Negative Binomial model adds a dispersion parameter to accommodate this.
+
+### Fit Negative Binomial Regression
+
+```{r fit-negbin}
+# Fit Negative Binomial model
+model_nb <- glm.nb(
+  countBurglaries ~ countPotholes + holes311.nn + dist_to_hotspot +
+    pct_poverty + pct_owner + log_income + med_house_age +
+    pct_black + pct_hisp,
+  data = fishnet_model
+)
+# Summary
+summary(model_nb)
+
+# Compare AIC (lower is better)
+cat("\nModel Comparison:\n")
+cat("Poisson AIC:", round(AIC(model_poisson), 1), "\n")
+cat("Negative Binomial AIC:", round(AIC(model_nb), 1), "\n")
+
+# Select best model for predictions
+final_model <- model_nb
+cat("\n✓ Selected Negative Binomial as final model\n")
+```
+
+The Negative Binomial model has a substantially lower AIC `r round(AIC(model_nb), 1)` indicating this is a better model fit. 
+
+
+------------------------------------------------------------------------
+
+## Spatial Cross-Validation (LOGO-CV)
+
+To assess model generalizability, I implement Leave-One-Group-Out (LOGO) cross-validation using police districts as spatial folds. This tests whether the model trained on most of the city can accurately predict burglaries in held-out districts, simulating a real-world deployment scenario where we might want to forecast crime in a new area.
+
+```{r spatial-cv}
+districts <- unique(fishnet_model$District)
+cv_results <- data.frame()
+
+for (i in seq_along(districts)) {
+  test_district <- districts[i]
+  
+  # Split data spatially
+  train_data <- filter(fishnet_model, District != test_district)
+  test_data <- filter(fishnet_model, District == test_district)
+  
+  # Fit model on training folds
+  m_cv <- glm.nb(
+    countBurglaries ~ countPotholes + holes311.nn + dist_to_hotspot +
+      pct_poverty + pct_owner + log_income + med_house_age +
+      pct_black + pct_hisp,
+    data = train_data
+  )
+  
+  # Predict on held-out district
+  predictions <- predict(m_cv, newdata = test_data, type = "response")
+  
+  # Calculate errors
+  mae <- mean(abs(test_data$countBurglaries - predictions))
+  rmse <- sqrt(mean((test_data$countBurglaries - predictions)^2))
+  
+  cv_results <- rbind(cv_results, data.frame(
+    District = test_district,
+    n_test = nrow(test_data),
+    mae = mae,
+    rmse = rmse
+  ))
+  
+  cat("Fold", i, "/", length(districts), "- District", test_district,
+      "- MAE:", round(mae, 2), "\n")
+}
+
+# Overall results
+cat("\n✓ Cross-Validation Complete\n")
+cat("Mean MAE:", round(mean(cv_results$mae), 2), "\n")
+cat("Mean RMSE:", round(mean(cv_results$rmse), 2), "\n")
+```
+
+```{r cv-results-table}
+# Show results
+cv_results %>%
+  arrange(desc(mae)) %>%
+  kable(
+    digits = 2,
+    caption = "LOGO CV Results by District (Negative Binomial Model)",
+    col.names = c("District", "N Test Cells", "MAE", "RMSE")
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+The hardest-to-predict districts are `r cv_results$District[which.max(cv_results$mae)]` (MAE: `r round(max(cv_results$mae), 2)`) and `r cv_results$District[order(cv_results$mae, decreasing=TRUE)[2]]` (MAE: `r round(sort(cv_results$mae, decreasing=TRUE)[2], 2)`). These districts likely have unique characteristics not captured by the citywide model—perhaps different burglary-pothole relationships, distinct demographics, or reporting patterns.
+
+The mean MAE of `r round(mean(cv_results$mae), 2)` burglaries per cell indicates that, on average, our predictions are off by about `r round(mean(cv_results$mae))` incidents per 500m cell. Given that median burglary count is `r median(fishnet$countBurglaries)`, this represents moderate predictive accuracy.
+
+
+------------------------------------------------------------------------
+
+## Model Predictions and Comparison
+
+### Generate Final Predictions
+
+I now refit the model on all 2017 data to generate final predictions for comparison with a simple KDE baseline.
+
+```{r final-predictions}
+# Fit final model on all data (already done as 'final_model')
+
+# Add NB predictions back to fishnet
+fishnet <- fishnet %>%
+  mutate(
+    prediction_nb = predict(final_model, fishnet_model, type = "response")[match(uniqueID, fishnet_model$uniqueID)]
+  )
+
+# Normalize KDE to same scale as counts
+kde_sum <- sum(fishnet$kde_value, na.rm = TRUE)
+count_sum <- sum(fishnet$countBurglaries, na.rm = TRUE)
+
+fishnet <- fishnet %>%
+  mutate(
+    prediction_kde = (kde_value / kde_sum) * count_sum
+  )
+
+cat("✓ Generated predictions\n")
+cat("  Prediction range (NB):", 
+    round(min(fishnet$prediction_nb, na.rm=TRUE), 2), "to",
+    round(max(fishnet$prediction_nb, na.rm=TRUE), 2), "\n")
+```
+---
+
+### Visualize Predictions vs. Actuals
+
+```{r compare-models, fig.width=12, fig.height=4}
+# Create three maps
+p1 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = countBurglaries), color = NA) +
+  scale_fill_viridis_c(name = "Count", option = "plasma", limits = c(0, 15)) +
+  labs(title = "Actual Burglaries") +
+  theme_crime()
+
+p2 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = prediction_nb), color = NA) +
+  scale_fill_viridis_c(name = "Predicted", option = "plasma", limits = c(0, 15)) +
+  labs(title = "Model Predictions (Neg. Binomial)") +
+  theme_crime()
+
+p3 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = prediction_kde), color = NA) +
+  scale_fill_viridis_c(name = "Predicted", option = "plasma", limits = c(0, 15)) +
+  labs(title = "KDE Baseline Predictions") +
+  theme_crime()
+
+p1 + p2 + p3 +
+  plot_annotation(
+    title = "Actual vs. Predicted Burglaries (2017)",
+    subtitle = "Does our complex model outperform simple KDE?"
+  )
+```
+
+The Negative Binomial model produces a smoother, more interpretable risk surface that reflects both spatial patterns and neighborhood structure. The KDE baseline closely follows historical hotspots but offers less nuance, mainly following previous burglary report locations. The model, by incorporating potholes and demographics, can identify at-risk areas based on structural characteristics even in cells with low historical burglary counts.
+
+### Compare Performance Metrics
+
+```{r model-comparison-metrics}
+# Calculate performance metrics
+comparison <- fishnet %>%
+  st_drop_geometry() %>%
+  filter(!is.na(prediction_nb), !is.na(prediction_kde)) %>%
+  summarize(
+    model_mae = mean(abs(countBurglaries - prediction_nb)),
+    model_rmse = sqrt(mean((countBurglaries - prediction_nb)^2)),
+    kde_mae = mean(abs(countBurglaries - prediction_kde)),
+    kde_rmse = sqrt(mean((countBurglaries - prediction_kde)^2))
+  )
+
+comparison %>%
+  pivot_longer(everything(), names_to = "metric", values_to = "value") %>%
+  separate(metric, into = c("approach", "metric"), sep = "_") %>%
+  pivot_wider(names_from = metric, values_from = value) %>%
+  kable(
+    digits = 2,
+    caption = "In-Sample Performance: Model vs. KDE Baseline"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+```
+
+The KDE baseline has lower in-sample RMSE than the Negative Binomial model. This is not surprising, because KDE is applied directly to the observed crime locations, meaning, "where crime happened before, it will happen again". As a result, KDE performs extremely well in-sample but has limited ability to generalize spatial patterns to new locations. In contrast, the regression model incorporates structural features and thus prioritizes out-of-sample predictive performance. The real test of model quality comes from the spatial and temporal validation results, where KDE typically performs worse.
+
+### Error Maps
+ 
+```{r error-maps, fig.width=12, fig.height=5}
+fishnet <- fishnet %>%
+  mutate(
+    error_nb = countBurglaries - prediction_nb,
+    error_kde = countBurglaries - prediction_kde
+  )
+
+p1 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = error_nb), color = NA) +
+  scale_fill_gradient2(
+    name = "Error",
+    low = "#2166ac",
+    mid = "grey90",
+    high = "#b2182b",
+    midpoint = 0,
+    limits = c(-10, 10)
+  ) +
+  labs(title = "NB Model Errors") +
+  theme_crime()
+
+p2 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = error_kde), color = NA) +
+  scale_fill_gradient2(
+    name = "Error",
+    low = "#2166ac",
+    mid = "grey90",
+    high = "#b2182b",
+    midpoint = 0,
+    limits = c(-10, 10)
+  ) +
+  labs(title = "KDE Baseline Errors") +
+  theme_crime()
+
+p1 + p2 +
+  plot_annotation(
+    title = "Prediction Errors: Actual minus Predicted",
+    subtitle = "Red = underprediction, Blue = overprediction"
+  )
+```
+
+Both approaches struggle in the same high-crime corridors on the South and West sides, where they tend to underpredict (red). The model shows slightly more spatial structure in its errors—systematic overprediction in some low-crime areas and underprediction in emerging hotspots. This suggests room for improvement through additional spatial features or interaction terms.
+
+## Summary Statistics and Findings
+
+### Model Performance Summary
+
+```{r summary-table}
+summary_stats <- data.frame(
+  Metric = c(
+    "Mean LOGO CV MAE",
+    "Mean LOGO CV RMSE",
+    "In-sample MAE (Model)",
+    "In-sample MAE (KDE)",
+    "AIC (Negative Binomial)",
+    "Number of cells",
+    "Cells with 0 burglaries",
+    "Most predictive variable"
+  ),
+  Value = c(
+    round(mean(cv_results$mae), 2),
+    round(mean(cv_results$rmse), 2),
+    round(comparison$model_mae, 2),
+    round(comparison$kde_mae, 2),
+    round(AIC(final_model), 2),
+    nrow(fishnet),
+    paste0(sum(fishnet$countBurglaries == 0), " (", 
+           round(100*sum(fishnet$countBurglaries == 0)/nrow(fishnet), 2), "%)"),
+    names(which.max(abs(coef(final_model)[-1])))
+  )
+)
+
+summary_stats %>%
+  kable(
+    caption = "Model Performance Summary Statistics",
+    col.names = c("Metric", "Value")
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+### Key Findings
+
+**Technical Performance:**
+
+- Cross-validation MAE: `r round(mean(cv_results$mae), 2)` burglaries per cell
+- Model vs. KDE: KDE performs slightly better in-sample (MAE `r round(comparison$kde_mae, 2)` vs. `r round(comparison$model_mae, 2)`), but the NB model is still useful because it lets us see how different neighborhood factors relate to burglary patterns
+
+**Spatial Patterns:**
+
+- Burglaries are highly clustered in south and west areas
+- Potholes cluster differently, more in north-central area
+- ocal Moran’s I hot spots seem to line up more with areas of disinvestment and infrastructure issues than with crime specifically
+
+**Model Limitations:**
+
+- Overdispersion: Yes (dispersion = `r round(dispersion, 2)`), addressed via Negative Binomial
+- Spatial autocorrelation in residuals: Likely present, as shown by error patterns
+- Cells with zero counts: `r round(100*sum(fishnet$countBurglaries == 0)/nrow(fishnet), 1)`% which is typical in crime data and something the model has to account for
+
+**To Summarize**:
+
+Potholes and burglaries happen in the same places not because of causation, but because both are symptoms of deeper neighborhood issues.
+
+------------------------------------------------------------------------
+
+## CHALLENGE TASK: Temporal Validation (2018)
+
+The final test of model quality is predicting the future. I use the 2017-trained model to forecast 2018 burglary patterns, assessing whether spatial structure and pothole associations remain stable over time.
+
+------------------------------------------------------------------------
+
+### Load Data and Aggregate to the Fishnet
+
+```{r 2018-burg-fish, warning=FALSE, show_col_types = FALSE}
+# Query filtered for forcible entry burglaries in 2018
+burg2018 <- read_csv(here("labs/lab4/data/burglaries_2018.csv"))%>%
+  filter(!is.na(Latitude), !is.na(Longitude))%>%
+  filter(Description == "FORCIBLE ENTRY")%>%
+  st_as_sf(coords = c("Longitude", "Latitude"), crs = 4326) %>%
+  st_transform('ESRI:102271')
+
+# Aggregate to fishnet
+burg2018_fish <- st_join(burg2018, fishnet, join = st_within)%>%
+  st_drop_geometry() %>%
+  group_by(uniqueID) %>%
+  summarize(countBurglaries2018 = n())
+
+fishnet <- fishnet %>%
+  left_join(burg2018_fish, by = "uniqueID") 
+
+cat("✓ Loaded 2018 burglaries\n")
+cat("  Total incidents:", nrow(burg2018), "\n")
+cat("  Date range:", min(burg2018$Date, na.rm=TRUE), "to", max(burg2018$Date, na.rm=TRUE), "\n")
+```
+
+The grid acts as a consistent geographic frame across years. By aggregating 2017 and 2018 burglaries to the same cells, I can directly compare predictions vs. actual at matching locations. The potholes and census features are from 2017, which tests whether these structural predictors apply to the 2018 data.
+
+### Use 2017 Model to Predict 2018 Counts
+
+```{r predict-2018}
+# Make a column to store predicted data outcomes
+fishnet <- fishnet %>%
+  mutate(
+    prediction_2018 = predict(final_model, newdata = fishnet_model, type = "response")[match(uniqueID, fishnet_model$uniqueID)]
+  )
+
+cat("✓ Generated 2018 predictions from 2017 model\n")
+```
+
+### Calculate Temporal Validation Metrics
+
+```{r temporal-metrics}
+#Fixing column name
+fishnet <- fishnet %>%
+ mutate(countBurglaries2018 = replace_na(countBurglaries2018, 0))
+
+# Calculate MAE and RMSE for 2018 predictions
+temporal_metrics <- fishnet %>%
+  st_drop_geometry() %>%
+  filter(!is.na(countBurglaries2018), !is.na(prediction_2018)) %>%
+  summarize(
+    temporal_mae = mean(abs(countBurglaries2018 - prediction_2018)),
+    temporal_rmse = sqrt(mean((countBurglaries2018 - prediction_2018)^2))
+  )
+cat("Temporal Validation (2018):\n")
+cat("  MAE:", round(temporal_metrics$temporal_mae, 2), "\n")
+cat("  RMSE:", round(temporal_metrics$temporal_rmse, 2), "\n")
+```
+### Compare Spatial vs. Temporal Validation
+
+```{r compare-spatial-temporal}
+# Compare LOGO CV (spatial) vs 2018 (temporal)
+validation_comparison <- tibble(
+  Validation = c("Spatial (LOGO CV 2017)", "Temporal (2018)"),
+  MAE = c(mean(cv_results$mae), temporal_metrics$temporal_mae),
+  RMSE = c(mean(cv_results$rmse), temporal_metrics$temporal_rmse)
+)
+
+validation_comparison %>%
+  kable(
+    digits = 2,
+    caption = "Spatial vs. Temporal Validation Comparison"
+  ) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+**Interpretation**: Temporal prediction (2018 MAE: `r round(temporal_metrics$temporal_mae, 2)`) is `r ifelse(temporal_metrics$temporal_mae > mean(cv_results$mae), "worse", "better")` than spatial cross-validation (2017 MAE: `r round(mean(cv_results$mae), 2)`). 
+
+This is expected because:
+
+1. **True change over time**: Burglary patterns may have shifted between 2017-2018
+2. **Feature staleness**: Our potholes and census data are from 2017; they don't capture 2018 updates
+3. **Harder test**: Temporal validation is a more realistic test—it simulates forecasting future outcomes using past data
+
+Since temporal MAE is substantially higher, it suggests our model captures the 2017 spatial structure well but has limited predictive power for future burglary patterns. This is common in crime forecasting and highlights the importance of regularly updating models.
+
+### Visualize 2018 Predictions and Errors
+
+```{r temporal-viz, fig.width=12, fig.height=8}
+fishnet <- fishnet %>%
+  mutate(error_2018 = countBurglaries2018 - prediction_2018)
+
+p1 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = countBurglaries2018), color = NA) +
+  scale_fill_viridis_c(name = "Count", option = "plasma", limits = c(0, 15)) +
+  labs(title = "Actual 2018 Burglaries") +
+  theme_crime()
+
+p2 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = prediction_2018), color = NA) +
+  scale_fill_viridis_c(name = "Predicted", option = "plasma", limits = c(0, 15)) +
+  labs(title = "Predicted 2018 (from 2017 model)") +
+  theme_crime()
+
+p3 <- ggplot() +
+  geom_sf(data = fishnet, aes(fill = error_2018), color = NA) +
+  scale_fill_gradient2(
+    name = "Error",
+    low = "#2166ac",
+    mid = "grey90",
+    high = "#b2182b",
+    midpoint = 0,
+    limits = c(-10, 10)
+  ) +
+  labs(title = "2018 Prediction Errors") +
+  theme_crime()
+
+(p1 + p2 + p3) +
+  plot_annotation(
+    title = "Temporal Validation: 2018 Predictions from 2017 Model"
+  )
+```
+
+The 2018 error map reveals systematic patterns:
+- **Underprediction (red)**: Small clusters on south and west sides where burglaries increased or new hotspots emerged
+- **Overprediction (blue)**: Areas where crime declined more than the model expected
+
+These patterns suggest our model captures baseline spatial risk but misses temporal dynamics. To improve forecasting, we might:
+1. Incorporate lagged crime counts to capture momentum
+2. Add time-varying predictors (unemployment, foreclosures)
+3. Use dynamic updating (refit monthly/quarterly)
+
+------------------------------------------------------------------------
+## Conclusions
+
+### Overview
+I was tasked with building a spatial predictive model examining the relation of 311 alley pothole complaints relate to burglary patterns in Chicago in both 2017 and 2018. Using a 500m x 500m fishnet grid for uniform spatial units for analysis, I then calculate Local Moran's I calculations, LISA visualizations, poisson regression, and negative binomial regression to test pothole data and other structural features on burglaries.
+
+**Did pothole patterns predict burglary risk?**
+
+Partially. Pothole counts and proximity showed associations with burglaries, but these effects largely disappeared after controlling for socioeconomic characteristics. This suggests both are driven by shared structural conditions—neighborhood disinvestment, poverty, and housing market weakness—rather than potholes directly causing crime.
+
+
+**Did the model outperform the KDE baseline?**
+
+Not in raw predictive accuracy on 2017 data. The KDE achieved slightly lower MAE (`r round(comparison$kde_mae, 2)` vs. `r round(comparison$model_mae, 2)`). However, the regression model provides interpretability and highlights actionable risk factors, offering insight into prominent structural variables. 
+
+**How well did predictions generalize across space and time?**
+
+Spatial cross-validation (LOGO CV) showed moderate performance (MAE = `r round(mean(cv_results$mae), 2)`),  while temporal predictions (2018) were less accurate MAE = `r round(temporal_metrics$temporal_mae, 2)`, reflecting the challenge of forecasting dynamic crime patterns.
+
+------------------------------------------------------------------------
+## Final Remarks
+
+Ultimately, this analysis reveals that potholes are a symptom, not a cause, of the conditions that elevate burglary risk. While spatial models can identify where crime concentrates, understanding why requires examining the structural inequalities that shape both infrastructure quality and public safety. For Chicago and cities like it, durable crime reduction depends less on predicting hot spots than on addressing the economic and social conditions that create them
+
