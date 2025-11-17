@@ -18,7 +18,7 @@ Each project demonstrates practical applications of Esri tools and spatial reaso
 
 ---
 
-### 2. Liquor License Clustering – Philadelphia
+### 2. Liquor License Clustering – Philadelphia [Ongoing]
 **Goal:** Identify concentrations of active PLCB-licensed businesses (restaurants, bars, clubs) to understand nightlife and economic activity patterns.  
 **Tools & Methods:**
 - Spatial Join and Clip to align license data with neighborhood boundaries  
