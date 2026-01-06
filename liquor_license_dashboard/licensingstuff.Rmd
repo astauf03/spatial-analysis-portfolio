@@ -1,0 +1,286 @@
+---
+title: "East Passyunk Licensing Dashboard"
+subtitle: "Business + PLCB Liquor Licenses (Active) — Corridor Character Snapshot"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_depth: 2
+    df_print: paged
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 12,
+  fig.height = 7,
+  dpi = 300
+)
+```
+
+
+```{r libraries}
+library(sf)
+library(dplyr)
+library(readr)
+library(stringr)
+library(ggplot2)
+library(tigris)
+library(scales)
+
+
+```
+
+# 1. Purpose
+
+This project inventories active business licenses and active PLCB liquor licenses within the East Passyunk study area to support a corridor-scale understanding of commercial activity and neighborhood character.
+
+The deliverable is a dashboard-style summary: a map of active licenses and a compact breakdown of license composition.
+
+---
+
+# 2. Data and Study Area
+
+## 2.1 Load business licenses
+
+```{r dataload}
+bl <- st_read("data/business_licenses.geojson", quiet = TRUE) %>%
+  st_transform(2272) #Philly/SEPA analysis ESPG
+```
+
+## 2.2 Load study area boundary
+
+```{r boundaryload}
+ep_boundary <- st_read("data/study_areas_2025_1.shp", quiet = TRUE) %>%
+  st_transform(2272)
+
+```
+
+## 2.3 Load PLCB geocoded liquor licenses (gathered by planner and prof. Michael Fichman)
+
+```{r plcbload}
+plcb_raw <- readr::read_csv("data/PHL_PLCB_geocoded.csv", show_col_types = FALSE) %>%
+  mutate(
+    lon = as.numeric(lon),
+    lat = as.numeric(lat)
+  )
+
+plcb_sf <- plcb_raw %>%
+  mutate(
+    lon = as.numeric(lon),
+    lat = as.numeric(lat)
+  ) %>%
+  filter(!is.na(lon), !is.na(lat)) %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326, remove = FALSE) %>%
+  st_transform(2272)
+```
+
+---
+# 3. Prepare for Analysis by Joining
+
+## 3.1 Clip both datasets to East Passyunk
+```{r clip-tp-ep}
+bl_ep <- st_intersection(bl,ep_boundary)
+
+plcb_ep <- st_intersection(plcb_sf, ep_boundary)
+```
+
+## 3.2 Filter to active licenses and standardize columns
+```{r filter-to-active}
+bl_ep_active <- bl_ep %>%
+  filter(licensestatus == "Active") %>%   # filter to active status
+  mutate(
+    category = case_when(
+      licensetype %in% c(
+        "Food Preparing and Serving",
+        "Food Preparing and Serving (30+ SEATS)",
+        "Sidewalk Cafe",
+        "Food Establishment, Retail Permanent Location",
+        "Food Caterer",
+        "Food Estab, Retail Non-Permanent Location (Annual)",
+        "Food Manufacturer / Wholesaler"
+      ) ~ "Dining",
+      licensetype %in% c(
+        "Amusement",
+        "Limited Lodging Operator",
+        "Special Assembly Occupancy"
+      ) ~ "Entertainment",
+      TRUE ~ "Other"
+    ),
+    source = "Business License"
+  ) %>%
+  arrange(addressobjectid, category) %>%
+  group_by(addressobjectid) %>%
+  slice(1) %>%
+  ungroup() %>%
+  st_zm(drop = TRUE, what = "ZM")
+
+  
+```
+
+Filter for PLCB active licenses
+```{r plcb-active}
+plcb_ep_active <- plcb_ep %>%
+  filter(Status == "Active") %>%
+  mutate(
+    category = "PLCB License",
+    source = "PLCB License", 
+    licensetype = License.Type) %>%
+  st_zm(drop = TRUE, what = "ZM")
+  
+```
+
+
+
+
+
+## 3.3 Combine business licenses and PLCB licenses into one dataset
+
+```{r combine-to-one}
+licenses_ep <- bind_rows(
+  bl_ep_active %>%
+    transmute(
+      source,
+      category,
+      licensetype = licensetype,
+      name = business_name,
+      address = address,
+      geometry
+    ),
+  plcb_ep_active %>%
+    transmute(
+      source,
+      category,
+      licensetype = License.Type,
+      name = Licensee,
+      address = Premises.Address,
+      geometry
+    )
+)
+
+# quick sanity check
+nrow(licenses_ep)
+```
+
+# 4. Dashboard Summary
+
+## 4.1 Key Counts
+
+```{r key-counts}
+## 4.1 Key Counts by Category
+
+summary_counts <- licenses_ep %>%
+  st_drop_geometry() %>%
+  count(category, sort = TRUE) %>%
+  mutate(
+    percent = round(100 * n / sum(n), 2)
+  )
+
+summary_counts
+
+```
+## 4.2 License Composition Chart
+
+```{r comp-chart}
+## 4.2 License Composition Chart
+
+license_type_summary <- licenses_ep %>%
+  st_drop_geometry() %>%
+  count(category, licensetype, sort = TRUE) %>%
+  group_by(category) %>%
+  mutate(
+    pct_within_category = n / sum(n)
+  ) %>%
+  ungroup()
+
+ggplot(
+  license_type_summary,
+  aes(x = reorder(licensetype, n), y = n, fill = category)
+) +
+  geom_col(alpha = 0.9) +
+  coord_flip() +
+  geom_text(aes(label = n), hjust = -0.15, size = 4) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = "Food, Beverage & Entertainment License Distribution — East Passyunk",
+    subtitle = "Active licenses only",
+    x = NULL,
+    y = "Count",
+    fill = "Category"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+
+```
+
+## 5.1 Load Clip Roads
+```{r tigris-roads}
+## 5.1 Local Roads for Context
+
+options(tigris_use_cache = TRUE)
+
+roads <- roads(state = "PA", county = "Philadelphia") %>%
+  st_transform(2272)
+
+ep_buffer <- st_buffer(ep_boundary, dist = 800)  # ~800 ft buffer
+roads_clipped <- st_intersection(roads, ep_buffer)
+
+```
+
+## 5.1 Dashboard Map
+
+```{r dash-map}
+## 5.2 Map of Active Licenses in East Passyunk
+
+category_palette <- c(
+  "Dining" = "#7b3294",
+  "Entertainment" = "#686569",
+  "Other" = "#ADB068",
+  "PLCB License" = "#D17621"
+)
+
+ggplot() +
+  geom_sf(data = roads_clipped, color = "gray55", linewidth = 0.25) +
+  geom_sf(
+    data = ep_boundary,
+    fill = NA,
+    color = "#F50A0A",
+    linewidth = 0.9,
+    linetype = "dashed"
+  ) +
+  geom_sf(
+    data = licenses_ep,
+    aes(color = category),
+    size = 2.2,
+    alpha = 0.9
+  ) +
+  scale_color_manual(values = category_palette) +
+  labs(
+    title = "Active Business and Liquor Licenses in East Passyunk",
+    color = "License Category"
+  ) +
+  theme_void() +
+  theme(
+    plot.background = element_rect(fill = "black", color = NA),
+    panel.background = element_rect(fill = "black", color = NA),
+    plot.title = element_text(
+      hjust = 0.5,
+      color = "white",
+      size = 16,
+      face = "bold"
+    ),
+    legend.background = element_rect(fill = "black", color = NA),
+    legend.key = element_rect(fill = "black", color = NA),
+    legend.text = element_text(color = "white"),
+    legend.title = element_text(color = "white", face = "bold")
+  )
+
+```
+
+
+
