@@ -19,13 +19,16 @@ Each project demonstrates practical applications of Esri tools and spatial reaso
 ---
 
 ### 2. Liquor License Clustering – Philadelphia [Ongoing]
-**Goal:** Identify concentrations of active PLCB-licensed businesses (restaurants, bars, clubs) to understand nightlife and economic activity patterns.  
-**Tools & Methods:**
-- Spatial Join and Clip to align license data with neighborhood boundaries  
-- Hot Spot Analysis (Getis-Ord Gi*) and Local Moran’s I for spatial clustering  
-- Symbology and classification for identifying high-high and low-low clusters  
-**Outcome:** Mapped statistically significant clusters of bar and restaurant licenses, highlighting the corridor’s role as a nightlife destination.  
-[View Project →](plcb_clustering/README.md)
+**Goal:** Summarize active business licenses and PLCB liquor licenses within the East Passyunk study area to describe corridor-scale dining and nightlife activity.  
+
+**What I built:** A dashboard-style HTML report with (1) a licensing road map and (2) a breakdown of license types by category.
+
+**Tools:** R (sf, dplyr, ggplot2), OpenDataPhilly business licenses, PLCB geocoded license data, ArcGIS Online 
+
+
+**Key takeaways:** Food service activity is a major share of active business licenses; PLCB licenses cluster along East Passyunk Ave; sidewalk café licenses reinforce the corridor’s pedestrian-oriented identity.
+
+[View Project →](./liquor_license_dashboard/index.html)
 
 ---
 
