@@ -1,0 +1,10 @@
+title: Alex Stauffer – Geospatial Analytics Portfolio
+description: Spatial analysis, planning-focused visual analytics, and miscellaneous projects
+
+remote_theme: mmistakes/minimal-mistakes@4.26.2
+theme: null
+
+plugins:
+  - jekyll-include-cache
+
+markdown: kramdown
