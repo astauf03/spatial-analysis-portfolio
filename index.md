@@ -1,5 +1,3 @@
-# Alex Stauffer's Geospatial Analytics Portfolio 
-
 This portfolio showcases my work using a combination of ArcGIS Pro, R, and Python for geoprocessing, spatial analysis, and visualization.  
 Each project demonstrates practical applications of Esri tools and spatial reasoning to real-world urban data, including Philadelphia-based datasets.
 
@@ -9,21 +7,23 @@ Each project demonstrates practical applications of Esri tools and spatial reaso
 
 ### 1. Public Policy Analytics Assignment 4: Predictive Policing – Chicago 2017 - 2018 
 **Goal:** I analyze the 311 "Alley Pothole Complaints" across the city of Chicago in correlation with forced-entry burglaries and other structural features. 
+
 **Tools & Methods:**
 - Spatial join and fishnet aggregations  
 - Local Moran’s I (LISA) for spatial clustering, Poisson and Negative Binomial regressions, Leave-One-Group-Out cross-validation  
 - Symbology and classification for identifying high-high and low-low clusters  
+
 **Outcome:** Potholes weakly predict burglary risk, but demographics and neighborhood conditions explain most patterns  
 [View Project →](chicago_burglary_potholes/)
 
 ---
 
-### 2. Liquor License Clustering – Philadelphia [Ongoing]
+### 2. Liquor License Clustering – Philadelphia 
 **Goal:** Summarize active business licenses and PLCB liquor licenses within the East Passyunk study area to describe corridor-scale dining and nightlife activity.  
 
-**What I built:** A dashboard-style HTML report with (1) a licensing road map and (2) a breakdown of license types by category.
+**What I built:** A HTML report with (1) a licensing road map and (2) a breakdown of license types by category. This project also contains a memo showcasing highlights of findings. 
 
-**Tools:** R (sf, dplyr, ggplot2), OpenDataPhilly business licenses, PLCB geocoded license data, ArcGIS Online 
+**Tools:** R (sf, dplyr, ggplot2, tigris), OpenDataPhilly business licenses, PLCB geocoded license data, ArcGIS Online 
 
 
 **Key takeaways:** Food service activity is a major share of active business licenses; PLCB licenses cluster along East Passyunk Ave; sidewalk café licenses reinforce the corridor’s pedestrian-oriented identity.
@@ -60,9 +60,9 @@ I’m a spatial data analyst with experience in **urban spatial analysis, GIS wo
 My work focuses on connecting spatial data to insights about neighborhood structure, land use, and community change. I am interested in 
 the nighttime culture and economies, and empowering cities with tools for 24-hour operation. 
 
-- 📍 Philadelphia, PA 
-- 🖥️ Tools: R, Python, ArcGIS Pro, Model Builder
-- 📫 Contact: [astauf03@upenn.edu] 
+- Philadelphia, PA 
+- Tools: R, Python, ArcGIS Pro, Model Builder, SQL
+- Contact: [Email](astauf03@upenn.edu)
 
 ---
 
